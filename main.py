@@ -1,20 +1,35 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from itertools import permutations
 
 # -------------------------
-# Polytopes (geometry layer)
+# Geometry: 4-cube + its simplex triangulation
 # -------------------------
 
-def tesseract_vertices():
-    # 16 vertices: all sign choices in R^4
-    return np.array([[s0, s1, s2, s3]
-                     for s0 in (-1, 1)
-                     for s1 in (-1, 1)
-                     for s2 in (-1, 1)
-                     for s3 in (-1, 1)], dtype=float)
+def tesseract_vertices01():
+    """
+    16 vertices of the unit 4-cube [0,1]^4 as binary vectors.
+    Order is lexicographic in (x0,x1,x2,x3).
+    """
+    return np.array([[b0, b1, b2, b3]
+                     for b0 in (0, 1)
+                     for b1 in (0, 1)
+                     for b2 in (0, 1)
+                     for b3 in (0, 1)], dtype=float)
 
-def tesseract_edges(V):
-    # edge between vertices that differ in exactly one coordinate
+def vertex_index_from_bits(bits):
+    """
+    bits: length-4 iterable of 0/1
+    Must match the lexicographic order used in tesseract_vertices01().
+    """
+    b0, b1, b2, b3 = map(int, bits)
+    return (b0 << 3) | (b1 << 2) | (b2 << 1) | b3
+
+def tesseract_edges_outer(V):
+    """
+    Outer edges of the 4-cube: connect vertices differing in exactly one coordinate.
+    Works for either {0,1}^4 or {-1,1}^4 vertices.
+    """
     edges = []
     for i in range(len(V)):
         for j in range(i + 1, len(V)):
@@ -22,47 +37,43 @@ def tesseract_edges(V):
                 edges.append((i, j))
     return edges
 
-def simplex4_vertices(scale=1.0):
+def tesseract_triangulation_simplices():
     """
-    Regular 4-simplex (5 vertices) embedded in R^4.
+    Canonical triangulation of [0,1]^4 into 4! = 24 congruent 4-simplices.
 
-    Construction:
-    - Start with standard basis e_i in R^5 (i=0..4)
-    - Subtract centroid so points lie in hyperplane sum x_i = 0
-    - Drop last coordinate to get R^4 coordinates (still regular up to linear isometry)
-    - Optionally rescale.
+    For each permutation sigma of {0,1,2,3}, take the 5 vertices:
+      v0 = (0,0,0,0)
+      v1 = e_{sigma(1)}
+      v2 = e_{sigma(1)} + e_{sigma(2)}
+      v3 = e_{sigma(1)} + e_{sigma(2)} + e_{sigma(3)}
+      v4 = (1,1,1,1)
+
+    Returns a list of simplices, each as a tuple of 5 vertex indices in [0..15].
     """
-    E5 = np.eye(5)
-    centroid = np.mean(E5, axis=0)
-    V5 = E5 - centroid              # 5 points in 4D hyperplane in R^5
-    V4 = V5[:, :4]                  # represent that hyperplane in R^4 (dropping one coord)
+    simplices = []
+    for perm in permutations(range(4)):
+        bits = np.zeros(4, dtype=int)
+        chain = [tuple(bits)]
+        for k in perm:
+            bits[k] = 1
+            chain.append(tuple(bits))
+        simplex = tuple(vertex_index_from_bits(b) for b in chain)  # 5 indices
+        simplices.append(simplex)
+    return simplices
 
-    # Normalize so average edge length is ~scale (optional but handy)
-    # Compute one edge length (all are equal for regular simplex)
-    d = np.linalg.norm(V4[0] - V4[1])
-    V4 = (scale / d) * V4
-    return V4
-
-def simplex_edges(V):
-    # Complete graph: all pairs (5 vertices -> 10 edges)
-    edges = []
-    n = len(V)
-    for i in range(n):
-        for j in range(i + 1, n):
-            edges.append((i, j))
-    return edges
-
-def make_polytope(kind="tesseract"):
-    kind = kind.lower().strip()
-    if kind in ("tesseract", "hypercube", "cube4", "4-cube"):
-        V = tesseract_vertices()
-        E = tesseract_edges(V)
-        return V, E
-    if kind in ("simplex", "4-simplex", "simplex4", "pentachoron"):
-        V = simplex4_vertices(scale=2.0)  # tweak scale to taste
-        E = simplex_edges(V)
-        return V, E
-    raise ValueError(f"Unknown polytope kind: {kind}")
+def edges_from_simplices(simplices):
+    """
+    Given a list of simplices (each a tuple of vertex indices),
+    return the set of all edges appearing in any simplex.
+    """
+    edge_set = set()
+    for s in simplices:
+        m = len(s)
+        for a in range(m):
+            for b in range(a + 1, m):
+                i, j = s[a], s[b]
+                edge_set.add((i, j) if i < j else (j, i))
+    return sorted(edge_set)
 
 # -------------------------
 # Rotations / projections
@@ -76,13 +87,15 @@ def rot_in_plane(n, i, j, theta):
     return R
 
 def rotate4(vs, angles):
-    # angles is a dict like { (0,1):a, (2,3):b, (0,2):c, ... }
+    """
+    angles: dict like { (0,1):a, (2,3):b, (0,2):c, ... }
+    """
     R = np.eye(4)
     for (i, j), th in angles.items():
         R = rot_in_plane(4, i, j, th) @ R
     return vs @ R.T
 
-def project_4_to_3(vs4, mode="drop_w", w_scale=0.6):
+def project_4_to_3(vs4, mode="w_shear", w_scale=0.6):
     x, y, z, w = vs4.T
     if mode == "drop_w":
         return np.c_[x, y, z]
@@ -101,15 +114,16 @@ def project_3_to_2(vs3, perspective=False, camera_dist=5.0):
 # Drawing
 # -------------------------
 
-def draw_edges(v2, edges, z, outfile="shape.svg"):
+def draw_edges(v2, edges, z, outfile="shape.svg", linewidth=1.6):
     fig, ax = plt.subplots(figsize=(6, 6))
     ax.set_aspect("equal")
     ax.axis("off")
 
-    order = sorted(edges, key=lambda e: (z[e[0]] + z[e[1]])/2.0)
+    # draw far -> near by average depth
+    order = sorted(edges, key=lambda e: (z[e[0]] + z[e[1]]) / 2.0)
     for i, j in order:
         (x1, y1), (x2, y2) = v2[i], v2[j]
-        ax.plot([x1, x2], [y1, y2], linewidth=1.6, solid_capstyle="round")
+        ax.plot([x1, x2], [y1, y2], linewidth=linewidth, solid_capstyle="round")
 
     fig.savefig(outfile, bbox_inches="tight", transparent=True)
     plt.close(fig)
@@ -119,13 +133,28 @@ def draw_edges(v2, edges, z, outfile="shape.svg"):
 # -------------------------
 
 if __name__ == "__main__":
-    polytope = "4-simplex"   # try "4-simplex"
-    V, E = make_polytope(polytope)
+    # 1) base vertices of the 4-cube
+    V = tesseract_vertices01()
 
+    # 2) triangulation into 24 4-simplices
+    simplices = tesseract_triangulation_simplices()
+
+    # Choose what edges you want to render:
+    # - triangulation edges (denser, shows interior structure)
+    E_tri = edges_from_simplices(simplices)
+
+    # - outer cube edges only (classic wireframe)
+    E_outer = tesseract_edges_outer(V)
+
+    # Pick one:
+    edges_to_draw = E_tri          # change to E_outer if you want only outer edges
+
+    # 3) rotate / project (same as before)
     angles = {(0,1): 0.7, (2,3): 1.1}
     V4 = rotate4(V, angles)
+
     V3 = project_4_to_3(V4, mode="w_shear", w_scale=0.75)
     V2, z = project_3_to_2(V3, perspective=True, camera_dist=6.0)
 
-    out = "tesseract.svg" if polytope == "tesseract" else "simplex4.svg"
-    draw_edges(V2, E, z, outfile=out)
+    # 4) draw
+    draw_edges(V2, edges_to_draw, z, outfile="tesseract_triangulated.svg", linewidth=1.4)
